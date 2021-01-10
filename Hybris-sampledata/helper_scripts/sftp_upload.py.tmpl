@@ -1,0 +1,101 @@
+import boto3
+import json
+import pysftp
+import os
+
+def sftp_file_exists(sftp, filename):
+    try:
+        sftp.get(filename)
+        return True
+    except FileNotFoundError:
+        return False
+
+def check(string, sub_str): 
+    if (string.find(sub_str) == -1): 
+        return False
+    else: 
+        return True
+
+secret_name = "sftp_secrets"
+region_name = "us-east-1"
+session = boto3.session.Session()
+
+client = session.client (
+    service_name='secretsmanager',
+    region_name='us-east-1'
+)
+get_secret_value_response = client.get_secret_value (
+    SecretId=secret_name
+)
+if 'SecretString' in get_secret_value_response:
+    secret_value = get_secret_value_response['SecretString']
+    secret       = json.loads(secret_value)
+    user_name    =  secret['sftp-user']
+    password     =  secret['sftp-password']
+    host_name    = "$NAMESPACE-hybris-sftp.y.balsamhill.com"
+    dir_list     = ["/bh-uk/","/bh-au/","/bh/","/bh-de/","/bh-fr/","/datamigration/"]        
+    local_path   = "./Hybris-sampledata/bb-hybris-sampledata"
+    remote_path  = "/"
+    file_keywords = ["AllEntities", "Sampledata", "Parent", "Child", "Ranking"]
+    num_of_files_to_import = 0
+
+    for dirpath, dirnames, files in os.walk(local_path):
+        if files:
+            for file in files:
+            	if not check(file,'README'):
+            		num_of_files_to_import = num_of_files_to_import + 1
+
+    print("Number of files to import =",num_of_files_to_import)
+
+    cnopts = pysftp.CnOpts()
+    cnopts.hostkeys = None 
+
+    with pysftp.Connection(host=host_name, username=user_name, password=password, cnopts=cnopts) as sftp:
+        print ("Connection succesfully established ... ")
+        dir_index = 0
+        while True:
+            dir = dir_list[dir_index]
+            data = []
+            try:
+                len_list_dir = len(os.listdir(local_path+dir))
+                if len_list_dir == 0:
+                    dir_index = dir_index + 1 	
+                    if dir_index >= len(dir_list):
+                        dir_index = 0
+                    continue
+            except:
+                print("Error in finding listing local documents")
+                break
+            for file_name in os.listdir(local_path+dir):
+                data.append(os.path.join(local_path+dir, file_name))
+
+            if len(data) == 0:
+                print("No files to upload from",dir_list[dir_index])
+                break
+            temp_list = [ None for i in range(5)]
+           
+            for file in data:
+                for keyword in file_keywords:
+                    if check(file, keyword):
+        	            temp_list[file_keywords.index(keyword)] = file
+            
+            final_list = list(filter(None, temp_list)) 
+            sftp.cwd(remote_path+dir)
+            if len(sftp.listdir()) == 0:             
+                for local_file in final_list:
+                    print("Local file", local_file)
+                    file_name = local_file.split('/')[-1]
+                    return_code = sftp.put(local_file,remote_path+dir+file_name)
+                    print('Successully uploaded: ',file_name)
+                    num_of_files_to_import = num_of_files_to_import-1
+                    if (return_code.st_size == os.stat(local_file).st_size): 
+                    	print("Removing file from local")
+                    	os.remove(local_file)
+                    break
+
+            dir_index = dir_index + 1
+            if dir_index >= len(dir_list):
+            	dir_index = 0
+            if num_of_files_to_import == 0:
+                print("All the files sucessfully uploaded!!")
+                break
